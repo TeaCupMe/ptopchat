@@ -1,0 +1,12 @@
+# Dialing site. Change peer_addr to site A's reachable IP when the hosts
+# are on different machines. 127.0.0.1 is the single-computer demo.
+site_name = "Office B"
+http_host = "0.0.0.0"
+http_port = 8081
+p2p_host = "0.0.0.0"
+p2p_port = 9701
+dial = true
+peer_addr = "127.0.0.1:9700"
+shared_secret = "change-me"
+data_dir = "./data/site-b"
+max_file_bytes = 104857600

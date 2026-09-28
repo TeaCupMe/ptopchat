@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Chat</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="top">
+    <div>
+      <p class="brand">ptopchat</p>
+      <h1 data-i18n="title">Chat</h1>
+      <p id="site-line" class="site-line"></p>
+    </div>
+    <div class="top-side">
+      <div id="peer" class="peer"></div>
+      <div class="langs" role="group" aria-label="Language">
+        <button type="button" id="lang-ru" class="lang">RU</button>
+        <button type="button" id="lang-en" class="lang">EN</button>
+      </div>
+    </div>
+  </header>
+  <main id="transcript" class="transcript" aria-live="polite"></main>
+  <form id="composer" class="composer">
+    <label class="field">
+      <span data-i18n="nick">Name</span>
+      <input id="nick" name="nick" maxlength="32" autocomplete="nickname" required data-i18n-placeholder="placeholderNick">
+    </label>
+    <label class="field grow">
+      <span data-i18n="message">Message</span>
+      <textarea id="text" name="text" rows="2" maxlength="4000" data-i18n-placeholder="placeholderMessage"></textarea>
+    </label>
+    <div class="actions">
+      <label class="file-btn">
+        <span data-i18n="attach">File</span>
+        <input id="file" name="file" type="file">
+      </label>
+      <span id="file-name" class="file-name"></span>
+      <button type="submit" id="send" data-i18n="send">Send</button>
+    </div>
+    <p id="form-error" class="form-error" hidden></p>
+  </form>
+  <script src="/app.js"></script>
+</body>
+</html>
