@@ -1,0 +1,240 @@
+:root {
+  color-scheme: light;
+  --ink: #1c2430;
+  --muted: #5c6b73;
+  --paper: #f3efe6;
+  --card: #fffdf8;
+  --line: #e2d9cc;
+  --pine: #1e3d36;
+  --pine-2: #2f6f5e;
+  --amber: #c56a12;
+  --danger: #8d2f2f;
+  --shadow: 0 10px 30px rgba(40, 32, 20, 0.08);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  font: 16px/1.45 "Segoe UI", "Noto Sans", "PT Sans", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(47, 111, 94, 0.08), transparent 28rem),
+    var(--paper);
+}
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-end;
+  padding: 1.1rem 1.25rem 0.9rem;
+  background: var(--pine);
+  color: #f7f3ea;
+}
+
+.brand {
+  margin: 0;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  opacity: 0.75;
+}
+
+h1 {
+  margin: 0.1rem 0;
+  font-size: 1.7rem;
+  font-weight: 650;
+}
+
+.site-line {
+  margin: 0;
+  color: #d5e4dc;
+  font-size: 0.92rem;
+}
+
+.top-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.55rem;
+}
+
+.peer {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  max-width: 22rem;
+  padding: 0.35rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 0.88rem;
+}
+
+.peer .dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: #d7c4a3;
+  flex: none;
+}
+
+.peer.online .dot { background: #8ddea8; }
+.peer.offline .dot { background: #e0a0a0; }
+
+.langs { display: flex; gap: 0.35rem; }
+
+.lang {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 0.2rem 0.65rem;
+  cursor: pointer;
+}
+
+.lang.active {
+  background: #f7f3ea;
+  color: var(--pine);
+  border-color: #f7f3ea;
+}
+
+.transcript {
+  flex: 1;
+  overflow: auto;
+  padding: 1rem 1.25rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+.empty {
+  margin: auto;
+  color: var(--muted);
+}
+
+.bubble {
+  width: min(42rem, 100%);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0.7rem 0.85rem;
+  box-shadow: var(--shadow);
+}
+
+.bubble.local { border-color: #b7d4c8; }
+
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.8rem;
+  color: var(--muted);
+  font-size: 0.82rem;
+  margin-bottom: 0.25rem;
+}
+
+.nick { color: var(--ink); font-weight: 650; }
+
+.site {
+  color: var(--pine-2);
+  font-weight: 600;
+}
+
+.body { white-space: pre-wrap; word-break: break-word; }
+
+.file-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.8rem;
+  align-items: center;
+}
+
+.file-row a {
+  color: var(--amber);
+  font-weight: 650;
+}
+
+.composer {
+  display: grid;
+  grid-template-columns: 12rem 1fr;
+  gap: 0.7rem 0.8rem;
+  margin: 0.5rem 1rem 1rem;
+  padding: 0.85rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.field { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.82rem; color: var(--muted); }
+.grow { min-width: 0; }
+
+input, textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+  color: var(--ink);
+  background: #fff;
+}
+
+textarea { resize: vertical; min-height: 2.8rem; }
+
+.actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.file-btn {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.45rem 0.85rem;
+  cursor: pointer;
+  background: #fff;
+}
+
+.file-btn input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.file-name { color: var(--muted); font-size: 0.85rem; }
+
+button[type="submit"] {
+  margin-left: auto;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.55rem 1.1rem;
+  background: var(--amber);
+  color: white;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+button[type="submit"]:disabled { opacity: 0.55; cursor: default; }
+
+.form-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--danger);
+}
+
+@media (max-width: 720px) {
+  .top, .top-side { align-items: stretch; }
+  .top { flex-direction: column; }
+  .top-side { align-items: flex-start; }
+  .composer { grid-template-columns: 1fr; }
+  button[type="submit"] { margin-left: 0; }
+}

@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

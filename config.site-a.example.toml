@@ -1,0 +1,12 @@
+# Listening site. Workstations on this LAN open http://<this-host>:8080
+site_name = "Офис A"
+http_host = "0.0.0.0"
+http_port = 8080
+p2p_host = "0.0.0.0"
+p2p_port = 9700
+# Exactly one of the two hosts dials. This one waits for the peer.
+dial = false
+peer_addr = ""
+shared_secret = "change-me"
+data_dir = "./data/site-a"
+max_file_bytes = 104857600
