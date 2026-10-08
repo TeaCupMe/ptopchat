@@ -128,15 +128,15 @@ class HttpServer:
             fields = _parse_multipart(request.body, content_type)
         except ValueError as exc:
             return _json_error(400, "Bad Request", str(exc))
-        nick = fields.get("nick")
+        dest = fields.get("to")
         uploaded = fields.get("file")
-        if not isinstance(nick, str) or not isinstance(uploaded, dict):
-            return _json_error(400, "Bad Request", "nick and file are required")
+        if not isinstance(dest, str) or not isinstance(uploaded, dict):
+            return _json_error(400, "Bad Request", "to and file are required")
         data = uploaded["data"]
         if len(data) > self.config.max_file_bytes:
             return _json_error(413, "Payload Too Large", "file too large")
         try:
-            message = await self.hub.post_file(nick, uploaded["filename"], data)
+            message = await self.hub.post_file(uploaded["filename"], data, dest)
         except HubError as exc:
             code = 413 if "large" in str(exc) else 400
             reason = "Payload Too Large" if code == 413 else "Bad Request"
@@ -187,6 +187,9 @@ class HttpServer:
                     {
                         "type": "hello",
                         "site_name": self.config.site_name,
+                        "name": self.config.name,
+                        "address": self.config.address,
+                        "destinations": self.hub.destinations(),
                         "peer_online": self.hub.peer_online,
                         "peer_users": self.hub.peer_users,
                         "local_online": len(self.hub.clients),
@@ -242,7 +245,7 @@ class HttpServer:
         if not isinstance(obj, dict) or obj.get("type") != "chat":
             return
         try:
-            await self.hub.post_chat(str(obj.get("nick", "")), str(obj.get("text", "")))
+            await self.hub.post_chat(str(obj.get("text", "")), str(obj.get("to", "")))
         except HubError as exc:
             await client.send(json.dumps({"type": "error", "error": str(exc)}, ensure_ascii=False))
 

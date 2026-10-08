@@ -65,17 +65,21 @@ def test_pages_offer_both_languages_and_hosts_exchange_text_and_file(tmp_path):
         script = _get(f"http://127.0.0.1:{http_a}/app.js").decode()
         assert 'id="lang-ru"' in page
         assert 'id="lang-en"' in page
+        assert 'id="destination"' in page
+        assert 'id="nick"' not in page
         assert "ui_lang" in script
 
-        asyncio_text = "hello from A"
-        _send_chat(http_a, "Ann", asyncio_text)
-        _upload(http_a, "Ann", "note.txt", b"file-body-from-a")
+        remote_text = "hello from A"
+        local_text = "stay on A"
+        remote = _send_chats(http_a, remote_text, local_text)
+        _upload(http_a, remote, "note.txt", b"file-body-from-a")
 
         deadline = time.time() + 20
         copied = None
         while time.time() < deadline:
             history = json.loads(_get(f"http://127.0.0.1:{http_b}/api/history"))
-            texts = [item for item in history["messages"] if item["text"] == asyncio_text]
+            texts = [item for item in history["messages"] if item["text"] == remote_text]
+            assert all(item["text"] != local_text for item in history["messages"])
             files = [
                 item
                 for item in history["messages"]
@@ -84,7 +88,8 @@ def test_pages_offer_both_languages_and_hosts_exchange_text_and_file(tmp_path):
             if texts and files:
                 copied = files[0]
                 assert texts[0]["site"] == "Офис A"
-                assert texts[0]["nick"] == "Ann"
+                assert texts[0]["nick"] == "Анна"
+                assert texts[0]["dest"] == remote
                 break
             if proc_a.poll() is not None or proc_b.poll() is not None:
                 break
@@ -105,35 +110,51 @@ def test_pages_offer_both_languages_and_hosts_exchange_text_and_file(tmp_path):
         log_b.close()
 
 
-def _send_chat(port: int, nick: str, text: str) -> None:
-    async def _run() -> None:
+def _send_chats(port: int, remote_text: str, local_text: str) -> str:
+    async def _run() -> str:
         async with websockets.connect(f"ws://127.0.0.1:{port}/ws") as ws:
-            hello = json.loads(await ws.recv())
-            assert hello["type"] == "hello"
-            await ws.send(json.dumps({"type": "chat", "nick": nick, "text": text}))
+            hello = await _peer_hello(ws)
+            local = hello["address"]
+            remote = next(addr for addr in hello["destinations"] if addr != local)
+            await ws.send(json.dumps({"type": "chat", "text": remote_text, "to": remote}))
+            await ws.send(json.dumps({"type": "chat", "text": local_text, "to": local}))
+            seen: set[str] = set()
             deadline = time.time() + 5
-            while time.time() < deadline:
-                raw = await asyncio_wait(ws)
-                payload = json.loads(raw)
-                if payload.get("type") == "message" and payload["message"]["text"] == text:
-                    return
-            raise AssertionError("local echo missing")
+            while time.time() < deadline and {remote_text, local_text} - seen:
+                payload = json.loads(await ws.recv())
+                if payload.get("type") == "message":
+                    seen.add(payload["message"]["text"])
+                    assert payload["message"]["nick"] == "Анна"
+            if {remote_text, local_text} - seen:
+                raise AssertionError(f"local echo missing: {seen}")
+            return remote
 
     import asyncio
 
-    asyncio.run(_run())
+    return asyncio.run(_run())
 
 
-async def asyncio_wait(ws):
-    return await ws.recv()
+async def _peer_hello(ws) -> dict:
+    hello = None
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        payload = json.loads(await ws.recv())
+        if payload.get("type") == "hello":
+            hello = payload
+        elif payload.get("type") == "destinations" and hello is not None:
+            hello["destinations"] = payload["addresses"]
+            hello["address"] = payload["address"]
+        if hello and any(addr != hello["address"] for addr in hello.get("destinations", [])):
+            return hello
+    raise AssertionError(f"peer destination missing: {hello}")
 
 
-def _upload(port: int, nick: str, filename: str, data: bytes) -> None:
+def _upload(port: int, dest: str, filename: str, data: bytes) -> None:
     boundary = "----ptopchat"
     body = (
         f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="nick"\r\n\r\n'
-        f"{nick}\r\n"
+        f'Content-Disposition: form-data; name="to"\r\n\r\n'
+        f"{dest}\r\n"
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
         f"Content-Type: application/octet-stream\r\n\r\n"
@@ -158,6 +179,8 @@ def _write_config(path, site_name, http_port, p2p_port, dial, peer_addr, data_di
         "\n".join(
             [
                 f"site_name = {json.dumps(site_name)}",
+                f"name = {json.dumps('Анна' if 'Офис' in site_name else 'Ben')}",
+                f"address = {json.dumps(f'127.0.0.1:{p2p_port}')}",
                 'http_host = "127.0.0.1"',
                 f"http_port = {http_port}",
                 'p2p_host = "127.0.0.1"',

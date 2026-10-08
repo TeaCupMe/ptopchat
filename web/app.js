@@ -1,7 +1,8 @@
 const I18N = {
   ru: {
     title: "Чат",
-    nick: "Имя",
+    destination: "Куда",
+    destinationHere: "этот сайт",
     message: "Сообщение",
     send: "Отправить",
     attach: "Файл",
@@ -13,15 +14,15 @@ const I18N = {
     fileTooLarge: "Файл больше допустимого размера",
     transferring: "Файл ещё передаётся",
     sendFailed: "Не удалось отправить",
-    placeholderNick: "Как вас показать",
     placeholderMessage: "Текст сообщения",
     localOnline: "На этом сайте: {n}",
     peerUsers: "На другом сайте: {n}",
-    siteLine: "Вы на сайте {name}",
+    siteLine: "{name} · {site}",
   },
   en: {
     title: "Chat",
-    nick: "Name",
+    destination: "To",
+    destinationHere: "this site",
     message: "Message",
     send: "Send",
     attach: "File",
@@ -33,17 +34,18 @@ const I18N = {
     fileTooLarge: "File exceeds the size limit",
     transferring: "File is still transferring",
     sendFailed: "Could not send",
-    placeholderNick: "Name shown to others",
     placeholderMessage: "Message text",
     localOnline: "On this site: {n}",
     peerUsers: "On the other site: {n}",
-    siteLine: "You are on {name}",
+    siteLine: "{name} · {site}",
   },
 };
 
 const state = {
   lang: initialLang(),
-  nick: localStorage.getItem("nick") || "",
+  name: "",
+  localAddress: "",
+  destinations: [],
   messages: new Map(),
   peerOnline: false,
   peerUsers: 0,
@@ -55,7 +57,7 @@ const state = {
 };
 
 const transcript = document.getElementById("transcript");
-const nickInput = document.getElementById("nick");
+const destSelect = document.getElementById("destination");
 const textInput = document.getElementById("text");
 const fileInput = document.getElementById("file");
 const fileName = document.getElementById("file-name");
@@ -63,8 +65,6 @@ const formError = document.getElementById("form-error");
 const sendButton = document.getElementById("send");
 const siteLine = document.getElementById("site-line");
 const peerEl = document.getElementById("peer");
-
-nickInput.value = state.nick;
 
 function initialLang() {
   const saved = localStorage.getItem("ui_lang");
@@ -96,6 +96,7 @@ function applyLang() {
   document.getElementById("lang-ru").setAttribute("aria-pressed", state.lang === "ru" ? "true" : "false");
   document.getElementById("lang-en").setAttribute("aria-pressed", state.lang === "en" ? "true" : "false");
   renderChrome();
+  renderDestinations();
   renderMessages();
 }
 
@@ -105,8 +106,26 @@ function setLang(lang) {
   applyLang();
 }
 
+function renderDestinations() {
+  const previous = destSelect.value || localStorage.getItem("dest") || "";
+  destSelect.replaceChildren();
+  for (const addr of state.destinations) {
+    const option = document.createElement("option");
+    option.value = addr;
+    const here = addr === state.localAddress ? ` (${t("destinationHere")})` : "";
+    option.textContent = addr + here;
+    destSelect.append(option);
+  }
+  const remote = state.destinations.find((addr) => addr !== state.localAddress);
+  if (state.destinations.includes(previous)) destSelect.value = previous;
+  else if (remote) destSelect.value = remote;
+  else if (state.destinations.length) destSelect.value = state.destinations[0];
+}
+
 function renderChrome() {
-  siteLine.textContent = state.siteName ? fill(t("siteLine"), { name: state.siteName }) : "";
+  siteLine.textContent = state.siteName
+    ? fill(t("siteLine"), { name: state.name || state.siteName, site: state.siteName })
+    : "";
   peerEl.classList.toggle("online", state.wsOpen && state.peerOnline);
   peerEl.classList.toggle("offline", state.wsOpen && !state.peerOnline);
   const bits = [];
@@ -164,6 +183,11 @@ function renderMessages() {
     time.dateTime = new Date(message.ts * 1000).toISOString();
     time.textContent = formatTime(message.ts);
     meta.append(nick, site, time);
+    if (message.dest) {
+      const dest = document.createElement("span");
+      dest.textContent = "→ " + message.dest;
+      meta.append(dest);
+    }
     card.append(meta);
     if (message.kind === "file") {
       const row = document.createElement("div");
@@ -221,6 +245,8 @@ function connect() {
     }
     if (payload.type === "hello") {
       state.siteName = payload.site_name || "";
+      state.name = payload.name || "";
+      applyDestinationList(payload.address, payload.destinations);
       state.peerOnline = Boolean(payload.peer_online);
       state.peerUsers = payload.peer_users || 0;
       state.localOnline = payload.local_online || 0;
@@ -230,6 +256,9 @@ function connect() {
       renderMessages();
     } else if (payload.type === "message" && payload.message) {
       upsert(payload.message);
+    } else if (payload.type === "destinations") {
+      applyDestinationList(payload.address, payload.addresses);
+      renderChrome();
     } else if (payload.type === "peer") {
       state.peerOnline = Boolean(payload.online);
       state.peerUsers = payload.users || 0;
@@ -254,9 +283,14 @@ function connect() {
 document.getElementById("lang-ru").addEventListener("click", () => setLang("ru"));
 document.getElementById("lang-en").addEventListener("click", () => setLang("en"));
 
-nickInput.addEventListener("change", () => {
-  state.nick = nickInput.value.trim();
-  localStorage.setItem("nick", state.nick);
+function applyDestinationList(address, addresses) {
+  state.localAddress = address || "";
+  state.destinations = Array.isArray(addresses) ? addresses : [];
+  renderDestinations();
+}
+
+destSelect.addEventListener("change", () => {
+  localStorage.setItem("dest", destSelect.value);
 });
 
 fileInput.addEventListener("change", () => {
@@ -268,13 +302,12 @@ fileInput.addEventListener("change", () => {
 document.getElementById("composer").addEventListener("submit", async (event) => {
   event.preventDefault();
   showError("");
-  const nick = nickInput.value.trim();
-  if (!nick) {
-    nickInput.reportValidity();
+  const dest = destSelect.value;
+  if (!dest) {
+    showError(t("sendFailed"));
     return;
   }
-  state.nick = nick;
-  localStorage.setItem("nick", nick);
+  localStorage.setItem("dest", dest);
   const text = textInput.value;
   const file = fileInput.files && fileInput.files[0];
   if (!text.trim() && !file) return;
@@ -288,12 +321,12 @@ document.getElementById("composer").addEventListener("submit", async (event) => 
         showError(t("sendFailed"));
         return;
       }
-      state.socket.send(JSON.stringify({ type: "chat", nick, text }));
+      state.socket.send(JSON.stringify({ type: "chat", text, to: dest }));
       textInput.value = "";
     }
     if (file) {
       const form = new FormData();
-      form.append("nick", nick);
+      form.append("to", dest);
       form.append("file", file);
       const response = await fetch("/api/upload", { method: "POST", body: form });
       if (!response.ok) {

@@ -46,10 +46,14 @@ class Store:
                 filename TEXT,
                 size INTEGER,
                 sha256 TEXT,
-                file_complete INTEGER NOT NULL DEFAULT 0
+                file_complete INTEGER NOT NULL DEFAULT 0,
+                dest TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(messages)")}
+        if "dest" not in columns:
+            self._conn.execute("ALTER TABLE messages ADD COLUMN dest TEXT NOT NULL DEFAULT ''")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_ts ON messages(ts)")
         self._conn.commit()
 
@@ -63,8 +67,8 @@ class Store:
             cursor = self._conn.execute(
                 """
                 INSERT OR IGNORE INTO messages
-                    (id, ts, site, nick, kind, text, filename, size, sha256, file_complete)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, ts, site, nick, kind, text, filename, size, sha256, file_complete, dest)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message_id,
@@ -77,6 +81,7 @@ class Store:
                     message.get("size"),
                     message.get("sha256"),
                     1 if message.get("file_complete") else 0,
+                    str(message.get("dest") or ""),
                 ),
             )
             self._conn.commit()
@@ -180,4 +185,5 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "size": row["size"],
         "sha256": row["sha256"],
         "file_complete": bool(row["file_complete"]),
+        "dest": row["dest"] if "dest" in row.keys() else "",
     }

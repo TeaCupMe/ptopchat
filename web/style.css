@@ -159,7 +159,7 @@ h1 {
 
 .composer {
   display: grid;
-  grid-template-columns: 12rem 1fr;
+  grid-template-columns: minmax(12rem, 18rem) 1fr;
   gap: 0.7rem 0.8rem;
   margin: 0.5rem 1rem 1rem;
   padding: 0.85rem;
@@ -172,7 +172,7 @@ h1 {
 .field { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.82rem; color: var(--muted); }
 .grow { min-width: 0; }
 
-input, textarea {
+input, textarea, select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
