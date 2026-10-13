@@ -46,7 +46,7 @@ def test_frame_roundtrip_and_split_reads():
 
 def test_hello_rejects_bad_banner():
     nonce = os.urandom(32)
-    hello = build_hello(role="dialer", site_name="Office A", nonce=nonce)
+    hello = build_hello(role="dialer", site_name="Office A", address="127.0.0.1:9700", nonce=nonce)
     parse_hello(hello, "dialer")
     hello["magic"] = "NOPE"
     with pytest.raises(ProtocolError):
@@ -57,11 +57,11 @@ def test_proofs_are_mutual_and_role_separated():
     secret = b"test-secret"
     dialer_nonce = os.urandom(32)
     listener_nonce = os.urandom(32)
-    listener_mac = proof(secret, "listener", dialer_nonce, listener_nonce, "A", "B")
-    dialer_mac = proof(secret, "dialer", dialer_nonce, listener_nonce, "A", "B")
+    listener_mac = proof(secret, "listener", dialer_nonce, listener_nonce, "A", "B", "10.0.0.2:1", "10.0.0.1:1")
+    dialer_mac = proof(secret, "dialer", dialer_nonce, listener_nonce, "A", "B", "10.0.0.2:1", "10.0.0.1:1")
     assert mac_equal(listener_mac, listener_mac)
     assert not mac_equal(listener_mac, dialer_mac)
-    other = proof(b"other", "listener", dialer_nonce, listener_nonce, "A", "B")
+    other = proof(b"other", "listener", dialer_nonce, listener_nonce, "A", "B", "10.0.0.2:1", "10.0.0.1:1")
     assert not mac_equal(listener_mac, other)
 
 
@@ -79,9 +79,11 @@ async def _handshake_rejects(secret_a: bytes, secret_b: bytes) -> None:
     right.setblocking(False)
     left_reader, left_writer = await asyncio.open_connection(sock=left)
     right_reader, right_writer = await asyncio.open_connection(sock=right)
-    dial = asyncio.create_task(handshake_dialer(left_reader, left_writer, secret_a, "Офис A"))
+    dial = asyncio.create_task(
+        handshake_dialer(left_reader, left_writer, secret_a, "Офис A", "127.0.0.1:9701")
+    )
     listen = asyncio.create_task(
-        handshake_listener(right_reader, right_writer, secret_b, "Office B")
+        handshake_listener(right_reader, right_writer, secret_b, "Office B", "127.0.0.1:9700")
     )
     try:
         done, pending = await asyncio.wait(
@@ -110,15 +112,19 @@ async def _handshake(secret_a: bytes, secret_b: bytes) -> None:
     right_reader, right_writer = await asyncio.open_connection(sock=right)
     try:
         dial = asyncio.create_task(
-            handshake_dialer(left_reader, left_writer, secret_a, "Офис A")
+            handshake_dialer(left_reader, left_writer, secret_a, "Офис A", "127.0.0.1:9701")
         )
         listen = asyncio.create_task(
-            handshake_listener(right_reader, right_writer, secret_b, "Office B")
+            handshake_listener(right_reader, right_writer, secret_b, "Office B", "127.0.0.1:9700")
         )
-        (dialer_key, peer_site), (listener_key, dialer_site) = await asyncio.gather(dial, listen)
+        (dialer_key, peer_site, peer_address), (listener_key, dialer_site, dialer_address) = await asyncio.gather(
+            dial, listen
+        )
         assert dialer_key == listener_key
         assert peer_site == "Office B"
+        assert peer_address == "127.0.0.1:9700"
         assert dialer_site == "Офис A"
+        assert dialer_address == "127.0.0.1:9701"
         blob = seal(dialer_key, {"type": "ping"}, b"")
         left_writer.write(blob)
         await left_writer.drain()

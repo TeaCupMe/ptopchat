@@ -54,22 +54,27 @@ async def handshake_dialer(
     writer: asyncio.StreamWriter,
     secret: bytes,
     site_name: str,
-) -> tuple[bytes, str]:
+    address: str,
+) -> tuple[bytes, str, str]:
     dialer_nonce = os.urandom(32)
     await _write_json(
         writer,
-        build_hello(role="dialer", site_name=site_name, nonce=dialer_nonce),
+        build_hello(role="dialer", site_name=site_name, address=address, nonce=dialer_nonce),
     )
     reply = await _read_json(reader)
-    listener_site, listener_nonce, listener_mac = parse_hello(reply, "listener")
+    listener_site, listener_address, listener_nonce, listener_mac = parse_hello(reply, "listener")
     if listener_mac is None:
         raise ProtocolError("missing peer hmac")
-    expected = proof(secret, "listener", dialer_nonce, listener_nonce, site_name, listener_site)
+    expected = proof(
+        secret, "listener", dialer_nonce, listener_nonce, site_name, listener_site, address, listener_address
+    )
     if not mac_equal(expected, listener_mac):
         raise ProtocolError("peer authentication failed")
-    mine = proof(secret, "dialer", dialer_nonce, listener_nonce, site_name, listener_site)
+    mine = proof(
+        secret, "dialer", dialer_nonce, listener_nonce, site_name, listener_site, address, listener_address
+    )
     await _write_json(writer, {"type": "auth", "hmac": base64.b64encode(mine).decode("ascii")})
-    return session_key(secret, dialer_nonce, listener_nonce), listener_site
+    return session_key(secret, dialer_nonce, listener_nonce), listener_site, listener_address
 
 
 async def handshake_listener(
@@ -77,14 +82,17 @@ async def handshake_listener(
     writer: asyncio.StreamWriter,
     secret: bytes,
     site_name: str,
-) -> tuple[bytes, str]:
+    address: str,
+) -> tuple[bytes, str, str]:
     hello = await _read_json(reader)
-    dialer_site, dialer_nonce, _mac = parse_hello(hello, "dialer")
+    dialer_site, dialer_address, dialer_nonce, _mac = parse_hello(hello, "dialer")
     listener_nonce = os.urandom(32)
-    listener_mac = proof(secret, "listener", dialer_nonce, listener_nonce, dialer_site, site_name)
+    listener_mac = proof(
+        secret, "listener", dialer_nonce, listener_nonce, dialer_site, site_name, dialer_address, address
+    )
     await _write_json(
         writer,
-        build_hello(role="listener", site_name=site_name, nonce=listener_nonce, mac=listener_mac),
+        build_hello(role="listener", site_name=site_name, address=address, nonce=listener_nonce, mac=listener_mac),
     )
     auth = await _read_json(reader)
     if auth.get("type") != "auth" or not isinstance(auth.get("hmac"), str):
@@ -93,10 +101,12 @@ async def handshake_listener(
         got = base64.b64decode(auth["hmac"], validate=True)
     except Exception as exc:
         raise ProtocolError("bad auth hmac") from exc
-    expected = proof(secret, "dialer", dialer_nonce, listener_nonce, dialer_site, site_name)
+    expected = proof(
+        secret, "dialer", dialer_nonce, listener_nonce, dialer_site, site_name, dialer_address, address
+    )
     if not mac_equal(expected, got):
         raise ProtocolError("peer authentication failed")
-    return session_key(secret, dialer_nonce, listener_nonce), dialer_site
+    return session_key(secret, dialer_nonce, listener_nonce), dialer_site, dialer_address
 
 
 class PeerLink:
@@ -107,12 +117,14 @@ class PeerLink:
         writer: asyncio.StreamWriter,
         key: bytes,
         peer_site: str,
+        peer_address: str,
     ) -> None:
         self.hub = hub
         self.reader = reader
         self.writer = writer
         self.key = key
         self.peer_site = peer_site
+        self.peer_address = peer_address
         self.closed = False
         self.outbox: asyncio.Queue[Any] = asyncio.Queue()
         self._decoder = FrameDecoder(key)
@@ -202,6 +214,8 @@ class PeerLink:
                     await self._write({"type": "presence", "online": len(self.hub.clients)})
                 elif kind == "catchup":
                     for message in self.hub.store.incomplete_files(HISTORY_WINDOW):
+                        if message.get("dest") != self.hub.config.address:
+                            continue
                         offset = self.hub.store.file_size(message["id"])
                         await self._write(
                             {"type": "file_resume", "id": message["id"], "offset": offset}
@@ -225,6 +239,7 @@ class PeerLink:
                     "ts": message["ts"],
                     "site": message["site"],
                     "nick": message["nick"],
+                    "to": message["dest"],
                     "name": message["filename"],
                     "size": size,
                     "sha256": message["sha256"],
@@ -240,7 +255,7 @@ class PeerLink:
 
     async def _send_missing(self, known: set[str]) -> None:
         for message in self.hub.store.recent(HISTORY_WINDOW):
-            if message["id"] in known:
+            if message["id"] in known or message.get("dest") != self.peer_address:
                 continue
             if message["kind"] == "chat":
                 await self._write(
@@ -250,6 +265,7 @@ class PeerLink:
                         "ts": message["ts"],
                         "site": message["site"],
                         "nick": message["nick"],
+                        "to": message["dest"],
                         "text": message["text"],
                     }
                 )
@@ -295,15 +311,17 @@ class PeerManager:
     async def _on_accept(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         try:
-            key, peer_site = await asyncio.wait_for(
-                handshake_listener(reader, writer, self.config.secret_bytes, self.config.site_name),
+            key, peer_site, peer_address = await asyncio.wait_for(
+                handshake_listener(
+                    reader, writer, self.config.secret_bytes, self.config.site_name, self.config.address
+                ),
                 timeout=HANDSHAKE_TIMEOUT,
             )
         except Exception as exc:
             log.warning("incoming peer %s rejected: %s", peer, exc)
             writer.close()
             return
-        link = await self._adopt(reader, writer, key, peer_site)
+        link = await self._adopt(reader, writer, key, peer_site, peer_address)
         if link is None:
             return
         log.info("peer channel up with %s", peer_site)
@@ -320,11 +338,13 @@ class PeerManager:
             host, port = split_host_port(self.config.peer_addr)
             try:
                 reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=10)
-                key, peer_site = await asyncio.wait_for(
-                    handshake_dialer(reader, writer, self.config.secret_bytes, self.config.site_name),
+                key, peer_site, peer_address = await asyncio.wait_for(
+                    handshake_dialer(
+                        reader, writer, self.config.secret_bytes, self.config.site_name, self.config.address
+                    ),
                     timeout=HANDSHAKE_TIMEOUT,
                 )
-                link = await self._adopt(reader, writer, key, peer_site)
+                link = await self._adopt(reader, writer, key, peer_site, peer_address)
                 if link is None:
                     await asyncio.sleep(delay)
                     delay = min(delay * 2, 30)
@@ -346,13 +366,14 @@ class PeerManager:
         writer: asyncio.StreamWriter,
         key: bytes,
         peer_site: str,
+        peer_address: str,
     ) -> PeerLink | None:
         async with self._lock:
             if self.active is not None and not self.active.closed:
                 log.info("closing extra peer socket while %s is connected", self.active.peer_site)
                 writer.close()
                 return None
-            link = PeerLink(self.hub, reader, writer, key, peer_site)
+            link = PeerLink(self.hub, reader, writer, key, peer_site, peer_address)
             self.active = link
         await self.hub.set_peer(link)
         return link

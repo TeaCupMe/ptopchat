@@ -1,6 +1,8 @@
 # Dialing site. Change peer_addr to site A's reachable IP when the hosts
 # are on different machines. 127.0.0.1 is the single-computer demo.
 site_name = "Office B"
+name = "Ben"
+address = "127.0.0.1:9701"
 http_host = "0.0.0.0"
 http_port = 8081
 p2p_host = "0.0.0.0"

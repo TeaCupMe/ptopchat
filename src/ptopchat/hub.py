@@ -15,7 +15,7 @@ from .store import Store, display_filename
 log = logging.getLogger("ptopchat.hub")
 
 MAX_TEXT = 4000
-MAX_NICK = 32
+MAX_NICK = 80
 
 
 class HubError(ValueError):
@@ -44,6 +44,7 @@ class Hub:
         self.peer: Any = None
         self.peer_online = False
         self.peer_users = 0
+        self.seen_peer_address = ""
 
     async def broadcast(self, payload: dict[str, Any]) -> None:
         text = json.dumps(payload, ensure_ascii=False)
@@ -62,19 +63,47 @@ class Hub:
         if peer is not None and not peer.closed:
             await peer.enqueue_frame({"type": "presence", "online": len(self.clients)})
 
+    def destinations(self) -> list[str]:
+        found: list[str] = []
+        for item in (self.config.address, self.config.peer_addr, self.seen_peer_address):
+            if item and item not in found:
+                found.append(item)
+        return found
+
+    def destination_notice(self) -> dict[str, Any]:
+        return {
+            "type": "destinations",
+            "address": self.config.address,
+            "addresses": self.destinations(),
+        }
+
     async def set_peer(self, peer: Any | None) -> None:
         self.peer = peer
         self.peer_online = peer is not None
         if peer is None:
             self.peer_users = 0
+        else:
+            self.seen_peer_address = peer.peer_address
         await self.broadcast({"type": "peer", "online": self.peer_online, "users": self.peer_users})
+        await self.broadcast(self.destination_notice())
 
-    async def post_chat(self, nick: str, text: str) -> dict[str, Any]:
+    def _check_dest(self, dest: str) -> str:
+        cleaned = str(dest).strip()
+        if cleaned not in self.destinations():
+            raise HubError("bad destination")
+        return cleaned
+
+    def _should_forward(self, message: dict[str, Any]) -> bool:
+        peer = self.peer
+        return peer is not None and not peer.closed and message.get("dest") == peer.peer_address
+
+    async def post_chat(self, text: str, dest: str) -> dict[str, Any]:
         message = {
             "id": str(uuid.uuid4()),
             "ts": time.time(),
             "site": self.config.site_name,
-            "nick": clean_nick(nick),
+            "nick": clean_nick(self.config.name),
+            "dest": self._check_dest(dest),
             "kind": "chat",
             "text": clean_text(text),
             "filename": None,
@@ -84,10 +113,11 @@ class Hub:
         }
         self.store.insert(message)
         await self.broadcast({"type": "message", "message": message})
-        await self._forward_chat(message)
+        if self._should_forward(message):
+            await self._forward_chat(message)
         return message
 
-    async def post_file(self, nick: str, filename: str, data: bytes) -> dict[str, Any]:
+    async def post_file(self, filename: str, data: bytes, dest: str) -> dict[str, Any]:
         if len(data) > self.config.max_file_bytes:
             raise HubError("file too large")
         file_id = str(uuid.uuid4())
@@ -97,7 +127,8 @@ class Hub:
             "id": file_id,
             "ts": time.time(),
             "site": self.config.site_name,
-            "nick": clean_nick(nick),
+            "nick": clean_nick(self.config.name),
+            "dest": self._check_dest(dest),
             "kind": "file",
             "text": "",
             "filename": display_filename(filename),
@@ -107,9 +138,8 @@ class Hub:
         }
         self.store.insert(message)
         await self.broadcast({"type": "message", "message": message})
-        peer = self.peer
-        if peer is not None and not peer.closed:
-            await peer.enqueue_file(message, 0)
+        if self._should_forward(message):
+            await self.peer.enqueue_file(message, 0)
         return message
 
     async def _forward_chat(self, message: dict[str, Any]) -> None:
@@ -122,6 +152,7 @@ class Hub:
                     "ts": message["ts"],
                     "site": message["site"],
                     "nick": message["nick"],
+                    "to": message["dest"],
                     "text": message["text"],
                 }
             )
@@ -164,6 +195,7 @@ class Hub:
                 "ts": float(header["ts"]),
                 "site": str(header["site"]),
                 "nick": clean_nick(str(header["nick"])),
+                "dest": str(header["to"]).strip(),
                 "kind": "chat",
                 "text": clean_text(str(header["text"])),
                 "filename": None,
@@ -174,7 +206,7 @@ class Hub:
         except (KeyError, TypeError, ValueError, HubError):
             log.warning("dropped remote chat frame")
             return
-        if len(message["site"]) > 80:
+        if len(message["site"]) > 80 or message["dest"] != self.config.address:
             return
         if self.store.insert(message):
             await self.broadcast({"type": "message", "message": message})
@@ -188,6 +220,7 @@ class Hub:
             site = str(header["site"])
             filename = display_filename(str(header["name"]))
             ts = float(header["ts"])
+            dest = str(header["to"]).strip()
         except (KeyError, TypeError, ValueError, HubError):
             log.warning("dropped remote file frame")
             return
@@ -196,7 +229,7 @@ class Hub:
             return
         if len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
             return
-        if len(site) > 80:
+        if len(site) > 80 or dest != self.config.address:
             return
         try:
             message = {
@@ -204,6 +237,7 @@ class Hub:
                 "ts": ts,
                 "site": site,
                 "nick": nick,
+                "dest": dest,
                 "kind": "file",
                 "text": "",
                 "filename": filename,

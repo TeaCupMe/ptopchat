@@ -1,5 +1,8 @@
 # Listening site. Workstations on this LAN open http://<this-host>:8080
 site_name = "Офис A"
+name = "Анна"
+# Address other sites choose when they send here. Not a wildcard.
+address = "127.0.0.1:9700"
 http_host = "0.0.0.0"
 http_port = 8080
 p2p_host = "0.0.0.0"

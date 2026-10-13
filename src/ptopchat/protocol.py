@@ -67,6 +67,7 @@ def build_hello(
     *,
     role: str,
     site_name: str,
+    address: str,
     nonce: bytes,
     mac: bytes | None = None,
 ) -> dict[str, Any]:
@@ -75,6 +76,7 @@ def build_hello(
         "version": VERSION,
         "role": role,
         "site_name": site_name,
+        "address": address,
         "nonce": _b64(nonce),
     }
     if mac is not None:
@@ -82,7 +84,7 @@ def build_hello(
     return obj
 
 
-def parse_hello(obj: dict[str, Any], expected_role: str) -> tuple[str, bytes, bytes | None]:
+def parse_hello(obj: dict[str, Any], expected_role: str) -> tuple[str, str, bytes, bytes | None]:
     if obj.get("magic") != MAGIC or obj.get("version") != VERSION:
         raise ProtocolError("unexpected handshake banner")
     if obj.get("role") != expected_role:
@@ -90,6 +92,10 @@ def parse_hello(obj: dict[str, Any], expected_role: str) -> tuple[str, bytes, by
     site_name = obj.get("site_name")
     if not isinstance(site_name, str) or not _valid_site_name(site_name):
         raise ProtocolError("bad site name")
+    address = obj.get("address")
+    if not isinstance(address, str) or not _valid_address(address):
+        raise ProtocolError("bad address")
+    address = address.strip()
     nonce_text = obj.get("nonce")
     if not isinstance(nonce_text, str):
         raise ProtocolError("missing nonce")
@@ -102,13 +108,23 @@ def parse_hello(obj: dict[str, Any], expected_role: str) -> tuple[str, bytes, by
         if not isinstance(mac_text, str):
             raise ProtocolError("bad hmac")
         mac = _unb64(mac_text)
-    return site_name, nonce, mac
+    return site_name, address, nonce, mac
 
 
 def _valid_site_name(name: str) -> bool:
     if not name or len(name) > 80:
         return False
     return "\x00" not in name and "\n" not in name and "\r" not in name
+
+
+def _valid_address(value: str) -> bool:
+    from .config import split_host_port
+
+    try:
+        host, _port = split_host_port(value.strip())
+    except ValueError:
+        return False
+    return host not in {"0.0.0.0", "::"}
 
 
 def proof(
@@ -118,6 +134,8 @@ def proof(
     listener_nonce: bytes,
     dialer_site: str,
     listener_site: str,
+    dialer_address: str,
+    listener_address: str,
 ) -> bytes:
     mac = hmac.new(secret, digestmod=hashlib.sha256)
     mac.update(role.encode("ascii"))
@@ -127,6 +145,10 @@ def proof(
     mac.update(dialer_site.encode("utf-8"))
     mac.update(b"\0")
     mac.update(listener_site.encode("utf-8"))
+    mac.update(b"\0")
+    mac.update(dialer_address.encode("utf-8"))
+    mac.update(b"\0")
+    mac.update(listener_address.encode("utf-8"))
     return mac.digest()
 
 

@@ -13,6 +13,8 @@ DEFAULT_MAX_FILE_BYTES = 100 * 1024 * 1024
 @dataclass(frozen=True)
 class Config:
     site_name: str
+    name: str
+    address: str
     http_host: str
     http_port: int
     p2p_host: str
@@ -34,6 +36,8 @@ def load_config(path: str | Path) -> Config:
         raw = tomllib.load(handle)
     try:
         site_name = str(raw["site_name"]).strip()
+        name = " ".join(str(raw["name"]).split())
+        address = str(raw["address"]).strip()
         http_host = str(raw["http_host"]).strip()
         http_port = int(raw["http_port"])
         p2p_host = str(raw["p2p_host"]).strip()
@@ -47,6 +51,11 @@ def load_config(path: str | Path) -> Config:
         raise ValueError(f"invalid config {config_path}") from exc
     if not site_name or len(site_name) > 80:
         raise ValueError("site_name must be 1..80 characters")
+    if not name or len(name) > 80 or "\n" in name or "\r" in name:
+        raise ValueError("name must be 1..80 characters")
+    address_host, _port = split_host_port(address)
+    if address_host in {"0.0.0.0", "::"}:
+        raise ValueError("address must be a reachable host:port")
     if not http_host or not p2p_host:
         raise ValueError("http_host and p2p_host are required")
     for port in (http_port, p2p_port):
@@ -64,6 +73,8 @@ def load_config(path: str | Path) -> Config:
         data_dir = (config_path.parent / data_dir).resolve()
     return Config(
         site_name=site_name,
+        name=name,
+        address=address,
         http_host=http_host,
         http_port=http_port,
         p2p_host=p2p_host,
