@@ -59,6 +59,7 @@ const state = {
   wsOpen: false,
   socket: null,
   pendingRef: "",
+  pendingText: "",
 };
 
 const transcript = document.getElementById("transcript");
@@ -171,19 +172,36 @@ function formatSize(size) {
   return `${text} ${units[unit]}`;
 }
 
-function fileStatus(message) {
+function transferLabel(message) {
+  const size = Number(message.size || 0);
+  const received = Number(message.received || 0);
+  const remote = Boolean(message.dest && state.localAddress && message.dest !== state.localAddress);
+  const incoming = !message.file_complete;
+  const onWire = message.file_complete && remote && received < size;
+  if (!incoming && !onWire) return "";
   if (!state.peerOnline) return t("waitingLink");
-  return fill(t("progress"), {
-    got: formatSize(message.received || 0),
-    total: formatSize(message.size || 0),
-  });
+  return fill(t("progress"), { got: formatSize(received), total: formatSize(size) });
 }
 
 function releaseComposer(clearText) {
+  const unchanged = textInput.value === state.pendingText;
   state.pendingRef = "";
-  if (clearText) textInput.value = "";
-  sendButton.disabled = !state.wsOpen;
+  state.pendingText = "";
+  if (clearText && unchanged) textInput.value = "";
+  const open = Boolean(state.socket && state.socket.readyState === WebSocket.OPEN);
+  state.wsOpen = open;
+  sendButton.disabled = !open;
   sendButton.textContent = t("send");
+}
+
+function acceptOutgoing(payload) {
+  if (!state.pendingRef || !payload || !payload.message) return false;
+  if (payload.ref && payload.ref === state.pendingRef) return true;
+  const message = payload.message;
+  return message.kind !== "file"
+    && message.site === state.siteName
+    && message.text === state.pendingText
+    && Math.abs(Number(message.ts) * 1000 - Date.now()) < 15000;
 }
 
 function renderMessages() {
@@ -224,15 +242,18 @@ function renderMessages() {
       const name = document.createElement("span");
       name.textContent = `${message.filename} (${formatSize(message.size || 0)})`;
       row.append(name);
+      const label = transferLabel(message);
+      if (label) {
+        const pending = document.createElement("span");
+        pending.className = "transfer";
+        pending.textContent = label;
+        row.append(pending);
+      }
       if (message.file_complete) {
         const link = document.createElement("a");
         link.href = `/api/files/${encodeURIComponent(message.id)}`;
         link.textContent = t("download");
         row.append(link);
-      } else {
-        const pending = document.createElement("span");
-        pending.textContent = fileStatus(message);
-        row.append(pending);
       }
       card.append(row);
     } else {
@@ -296,12 +317,12 @@ function connect() {
       renderChrome();
       renderMessages();
     } else if (payload.type === "message" && payload.message) {
-      if (payload.ref && payload.ref === state.pendingRef) releaseComposer(true);
+      if (acceptOutgoing(payload)) releaseComposer(true);
       upsert(payload.message);
     } else if (payload.type === "file_progress") {
-      const message = state.messages.get(payload.id);
+      const message = state.messages.get(String(payload.id || "").toLowerCase()) || state.messages.get(payload.id);
       if (message) {
-        message.received = payload.received;
+        message.received = Number(payload.received) || 0;
         renderMessages();
       }
     } else if (payload.type === "destinations") {
@@ -379,15 +400,17 @@ document.getElementById("composer").addEventListener("submit", async (event) => 
         return;
       }
       const ref = newRef();
+      state.pendingRef = ref;
+      state.pendingText = text;
+      sendButton.disabled = true;
+      sendButton.textContent = t("sending");
       try {
         state.socket.send(JSON.stringify({ type: "chat", text, to: dest, ref }));
       } catch (_sendErr) {
+        releaseComposer(false);
         showError(t("sendFailed"));
         return;
       }
-      state.pendingRef = ref;
-      sendButton.disabled = true;
-      sendButton.textContent = t("sending");
     }
     if (file) {
       const form = new FormData();

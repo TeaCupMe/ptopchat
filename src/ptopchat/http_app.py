@@ -245,7 +245,9 @@ class HttpServer:
         if not isinstance(obj, dict) or obj.get("type") != "chat":
             return
         try:
-            await self.hub.post_chat(str(obj.get("text", "")), str(obj.get("to", "")), obj.get("ref"))
+            await self.hub.post_chat(
+                str(obj.get("text", "")), str(obj.get("to", "")), obj.get("ref"), origin=client
+            )
         except HubError as exc:
             await client.send(json.dumps({"type": "error", "error": str(exc)}, ensure_ascii=False))
 

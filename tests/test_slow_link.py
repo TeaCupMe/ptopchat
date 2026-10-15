@@ -152,7 +152,7 @@ def test_chunk_progress_is_announced_and_ref_is_not_stored(tmp_path):
     )
     seen: list[dict] = []
 
-    async def broadcast(payload: dict) -> None:
+    async def broadcast(payload: dict, first: object = None) -> None:
         seen.append(payload)
 
     hub.broadcast = broadcast
@@ -201,4 +201,52 @@ def test_chunk_progress_is_announced_and_ref_is_not_stored(tmp_path):
     assert progress[0]["size"] == len(raw)
     stored = next(item for item in hub.history(10) if item["id"] == file_id)
     assert stored["received"] == 3
+    store.close()
+
+
+def test_outgoing_file_starts_at_zero_until_the_peer_acks(tmp_path):
+    store = Store(tmp_path)
+    hub = Hub(
+        Config(
+            site_name="a",
+            name="Ada",
+            address="127.0.0.1:1",
+            http_host="127.0.0.1",
+            http_port=1,
+            p2p_host="127.0.0.1",
+            p2p_port=2,
+            dial=False,
+            peer_addr="127.0.0.1:9",
+            shared_secret="secret",
+            data_dir=tmp_path,
+        ),
+        store,
+    )
+    seen: list[dict] = []
+
+    async def broadcast(payload: dict, first: object = None) -> None:
+        seen.append(payload)
+
+    hub.broadcast = broadcast
+
+    class Peer:
+        closed = False
+        peer_address = "127.0.0.1:9"
+
+        def __init__(self) -> None:
+            self.files: list[tuple] = []
+
+        async def enqueue_file(self, message: dict, offset: int) -> None:
+            self.files.append((message["id"], offset))
+
+    hub.peer = Peer()
+
+    async def run() -> None:
+        await hub.post_file("note.txt", b"abcdef", "127.0.0.1:9")
+
+    asyncio.run(run())
+    message = seen[-1]["message"]
+    assert message["file_complete"] is True
+    assert message["received"] == 0
+    assert hub.peer.files[0][1] == 0
     store.close()

@@ -157,6 +157,11 @@ h1 {
   font-weight: 650;
 }
 
+.transfer {
+  color: var(--pine-2);
+  font-weight: 650;
+}
+
 .composer {
   display: grid;
   grid-template-columns: minmax(12rem, 18rem) 1fr;

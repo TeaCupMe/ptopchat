@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -54,16 +55,24 @@ class Hub:
         self.peer_users = 0
         self.seen_peer_address = ""
 
-    async def broadcast(self, payload: dict[str, Any]) -> None:
+    async def broadcast(self, payload: dict[str, Any], *, first: Any = None) -> None:
         text = json.dumps(payload, ensure_ascii=False)
-        dead: list[Any] = []
-        for client in list(self.clients):
+        clients = list(self.clients)
+        if first is not None and first in clients:
+            clients.remove(first)
+            clients.insert(0, first)
+
+        async def ship(client: Any) -> None:
             try:
-                await client.send(text)
+                await asyncio.wait_for(client.send(text), timeout=3)
             except Exception:
-                dead.append(client)
-        for client in dead:
-            self.clients.discard(client)
+                self.clients.discard(client)
+                writer = getattr(client, "writer", None)
+                if writer is not None:
+                    writer.close()
+
+        if clients:
+            await asyncio.gather(*(ship(client) for client in clients))
 
     async def note_clients_changed(self) -> None:
         await self.broadcast({"type": "presence", "local_online": len(self.clients)})
@@ -115,7 +124,7 @@ class Hub:
     def history(self, limit: int) -> list[dict[str, Any]]:
         return [self.present(message) for message in self.store.recent(limit)]
 
-    async def post_chat(self, text: str, dest: str, ref: Any = None) -> dict[str, Any]:
+    async def post_chat(self, text: str, dest: str, ref: Any = None, origin: Any = None) -> dict[str, Any]:
         message = {
             "id": str(uuid.uuid4()),
             "ts": time.time(),
@@ -134,9 +143,12 @@ class Hub:
         client_ref = clean_ref(ref)
         if client_ref:
             notice["ref"] = client_ref
-        await self.broadcast(notice)
-        if self._should_forward(message):
-            await self._forward_chat(message)
+        deliver = asyncio.create_task(self.broadcast(notice, first=origin))
+        try:
+            if self._should_forward(message):
+                await self._forward_chat(message)
+        finally:
+            await deliver
         return message
 
     async def post_file(self, filename: str, data: bytes, dest: str) -> dict[str, Any]:
@@ -159,8 +171,12 @@ class Hub:
             "file_complete": True,
         }
         self.store.insert(message)
-        await self.broadcast({"type": "message", "message": self.present(message)})
-        if self._should_forward(message):
+        shown = self.present(message)
+        forwarding = self._should_forward(message)
+        if forwarding:
+            shown["received"] = 0
+        await self.broadcast({"type": "message", "message": shown})
+        if forwarding:
             await self.peer.enqueue_file(message, 0)
         return message
 
