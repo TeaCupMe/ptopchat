@@ -12,7 +12,9 @@ const I18N = {
     empty: "Сообщений пока нет",
     connecting: "Подключение…",
     fileTooLarge: "Файл больше допустимого размера",
-    transferring: "Файл ещё передаётся",
+    progress: "передаётся {got} из {total}",
+    waitingLink: "ожидание канала",
+    sending: "отправляется",
     sendFailed: "Не удалось отправить",
     placeholderMessage: "Текст сообщения",
     localOnline: "На этом сайте: {n}",
@@ -32,7 +34,9 @@ const I18N = {
     empty: "No messages yet",
     connecting: "Connecting…",
     fileTooLarge: "File exceeds the size limit",
-    transferring: "File is still transferring",
+    progress: "transferring {got} of {total}",
+    waitingLink: "waiting for the link",
+    sending: "sending",
     sendFailed: "Could not send",
     placeholderMessage: "Message text",
     localOnline: "On this site: {n}",
@@ -54,6 +58,7 @@ const state = {
   maxFileBytes: 100 * 1024 * 1024,
   wsOpen: false,
   socket: null,
+  pendingRef: "",
 };
 
 const transcript = document.getElementById("transcript");
@@ -95,6 +100,7 @@ function applyLang() {
   document.getElementById("lang-en").classList.toggle("active", state.lang === "en");
   document.getElementById("lang-ru").setAttribute("aria-pressed", state.lang === "ru" ? "true" : "false");
   document.getElementById("lang-en").setAttribute("aria-pressed", state.lang === "en" ? "true" : "false");
+  sendButton.textContent = state.pendingRef ? t("sending") : t("send");
   renderChrome();
   renderDestinations();
   renderMessages();
@@ -152,9 +158,32 @@ function formatTime(ts) {
 }
 
 function formatSize(size) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  const units = state.lang === "ru" ? ["Б", "КБ", "МБ", "ГБ"] : ["B", "KB", "MB", "GB"];
+  let value = Number(size) || 0;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 10 ? 0 : 1;
+  let text = value.toFixed(digits);
+  if (state.lang === "ru") text = text.replace(".", ",");
+  return `${text} ${units[unit]}`;
+}
+
+function fileStatus(message) {
+  if (!state.peerOnline) return t("waitingLink");
+  return fill(t("progress"), {
+    got: formatSize(message.received || 0),
+    total: formatSize(message.size || 0),
+  });
+}
+
+function releaseComposer(clearText) {
+  state.pendingRef = "";
+  if (clearText) textInput.value = "";
+  sendButton.disabled = !state.wsOpen;
+  sendButton.textContent = t("send");
 }
 
 function renderMessages() {
@@ -202,7 +231,7 @@ function renderMessages() {
         row.append(link);
       } else {
         const pending = document.createElement("span");
-        pending.textContent = t("transferring");
+        pending.textContent = fileStatus(message);
         row.append(pending);
       }
       card.append(row);
@@ -233,7 +262,7 @@ function connect() {
   state.socket = socket;
   socket.addEventListener("open", () => {
     state.wsOpen = true;
-    sendButton.disabled = false;
+    sendButton.disabled = Boolean(state.pendingRef);
     renderChrome();
   });
   socket.addEventListener("message", (event) => {
@@ -255,7 +284,14 @@ function connect() {
       renderChrome();
       renderMessages();
     } else if (payload.type === "message" && payload.message) {
+      if (payload.ref && payload.ref === state.pendingRef) releaseComposer(true);
       upsert(payload.message);
+    } else if (payload.type === "file_progress") {
+      const message = state.messages.get(payload.id);
+      if (message) {
+        message.received = payload.received;
+        renderMessages();
+      }
     } else if (payload.type === "destinations") {
       applyDestinationList(payload.address, payload.addresses);
       renderChrome();
@@ -263,10 +299,12 @@ function connect() {
       state.peerOnline = Boolean(payload.online);
       state.peerUsers = payload.users || 0;
       renderChrome();
+      renderMessages();
     } else if (payload.type === "presence") {
       state.localOnline = payload.local_online || 0;
       renderChrome();
     } else if (payload.type === "error") {
+      if (state.pendingRef) releaseComposer(false);
       showError(payload.error || t("sendFailed"));
     }
   });
@@ -274,8 +312,14 @@ function connect() {
     if (state.socket !== socket) return;
     state.wsOpen = false;
     state.peerOnline = false;
-    sendButton.disabled = true;
+    if (state.pendingRef) {
+      releaseComposer(false);
+      showError(t("sendFailed"));
+    } else {
+      sendButton.disabled = true;
+    }
     renderChrome();
+    renderMessages();
     setTimeout(connect, 1000);
   });
 }
@@ -317,12 +361,21 @@ document.getElementById("composer").addEventListener("submit", async (event) => 
   }
   try {
     if (text.trim()) {
+      if (state.pendingRef) return;
       if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
         showError(t("sendFailed"));
         return;
       }
-      state.socket.send(JSON.stringify({ type: "chat", text, to: dest }));
-      textInput.value = "";
+      const ref = crypto.randomUUID();
+      try {
+        state.socket.send(JSON.stringify({ type: "chat", text, to: dest, ref }));
+      } catch (_sendErr) {
+        showError(t("sendFailed"));
+        return;
+      }
+      state.pendingRef = ref;
+      sendButton.disabled = true;
+      sendButton.textContent = t("sending");
     }
     if (file) {
       const form = new FormData();

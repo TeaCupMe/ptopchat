@@ -36,6 +36,14 @@ def clean_text(text: str) -> str:
     return cleaned
 
 
+def clean_ref(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return None
+    if any(ch not in "0123456789abcdefABCDEF-" for ch in value):
+        return None
+    return value
+
+
 class Hub:
     def __init__(self, config: Config, store: Store) -> None:
         self.config = config
@@ -97,7 +105,17 @@ class Hub:
         peer = self.peer
         return peer is not None and not peer.closed and message.get("dest") == peer.peer_address
 
-    async def post_chat(self, text: str, dest: str) -> dict[str, Any]:
+    def present(self, message: dict[str, Any]) -> dict[str, Any]:
+        row = dict(message)
+        if row.get("kind") == "file":
+            size = int(row["size"] or 0)
+            row["received"] = size if row.get("file_complete") else self.store.file_size(str(row["id"]))
+        return row
+
+    def history(self, limit: int) -> list[dict[str, Any]]:
+        return [self.present(message) for message in self.store.recent(limit)]
+
+    async def post_chat(self, text: str, dest: str, ref: Any = None) -> dict[str, Any]:
         message = {
             "id": str(uuid.uuid4()),
             "ts": time.time(),
@@ -112,7 +130,11 @@ class Hub:
             "file_complete": False,
         }
         self.store.insert(message)
-        await self.broadcast({"type": "message", "message": message})
+        notice: dict[str, Any] = {"type": "message", "message": message}
+        client_ref = clean_ref(ref)
+        if client_ref:
+            notice["ref"] = client_ref
+        await self.broadcast(notice)
         if self._should_forward(message):
             await self._forward_chat(message)
         return message
@@ -137,7 +159,7 @@ class Hub:
             "file_complete": True,
         }
         self.store.insert(message)
-        await self.broadcast({"type": "message", "message": message})
+        await self.broadcast({"type": "message", "message": self.present(message)})
         if self._should_forward(message):
             await self.peer.enqueue_file(message, 0)
         return message
@@ -186,6 +208,9 @@ class Hub:
         if kind == "file_chunk":
             await self._ingest_chunk(header, payload, peer)
             return
+        if kind == "file_progress":
+            await self._ingest_progress(header)
+            return
         log.debug("ignored frame %s", kind)
 
     async def _ingest_chat(self, header: dict[str, Any]) -> None:
@@ -209,7 +234,7 @@ class Hub:
         if len(message["site"]) > 80 or message["dest"] != self.config.address:
             return
         if self.store.insert(message):
-            await self.broadcast({"type": "message", "message": message})
+            await self.broadcast({"type": "message", "message": self.present(message)})
 
     async def _ingest_file_meta(self, header: dict[str, Any]) -> None:
         try:
@@ -256,7 +281,7 @@ class Hub:
             self.store.mark_complete(stored["id"])
             stored = self.store.get(stored["id"])
         if inserted and stored is not None:
-            await self.broadcast({"type": "message", "message": stored})
+            await self.broadcast({"type": "message", "message": self.present(stored)})
 
     async def _ingest_chunk(self, header: dict[str, Any], payload: bytes, peer: Any) -> None:
         try:
@@ -274,18 +299,47 @@ class Hub:
         result = self.store.write_chunk(message_id, offset, payload)
         if result != "wrote":
             return
+        size = int(message["size"])
         current = self.store.file_size(message_id)
-        if current != message["size"]:
+        if current != size:
+            await self._announce_progress(message_id, current, size, peer)
             return
         digest = self.store.sha256(message_id)
         if digest != message["sha256"]:
             log.warning("file %s failed checksum; discarding bytes", message_id)
             self.store.truncate(message_id)
+            await self._announce_progress(message_id, 0, size, peer)
             return
         self.store.mark_complete(message_id)
+        await self._announce_progress(message_id, current, size, peer)
         updated = self.store.get(message_id)
         if updated is not None:
-            await self.broadcast({"type": "message", "message": updated})
+            await self.broadcast({"type": "message", "message": self.present(updated)})
+
+    async def _announce_progress(self, message_id: str, received: int, size: int, peer: Any) -> None:
+        await self.broadcast(
+            {"type": "file_progress", "id": message_id, "received": received, "size": size}
+        )
+        if peer is not None and not peer.closed:
+            await peer.enqueue_frame({"type": "file_progress", "id": message_id, "received": received})
+
+    async def _ingest_progress(self, header: dict[str, Any]) -> None:
+        try:
+            message_id = str(header["id"])
+            received = int(header["received"])
+        except (KeyError, TypeError, ValueError):
+            return
+        if received < 0 or not _looks_like_id(message_id):
+            return
+        message = self.store.get(message_id)
+        if message is None or message["kind"] != "file":
+            return
+        size = int(message["size"] or 0)
+        if received > size:
+            return
+        await self.broadcast(
+            {"type": "file_progress", "id": message["id"], "received": received, "size": size}
+        )
 
 
 def _looks_like_id(value: str) -> bool:

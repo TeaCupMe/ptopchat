@@ -9,6 +9,9 @@ def test_locales_have_the_same_keys():
     assert "ui_lang" in text
     assert _keys(text, "ru") == _keys(text, "en")
     assert "download" in _keys(text, "en")
+    assert {"progress", "waitingLink", "sending"} <= _keys(text, "en")
+    assert "pendingRef" in text
+    assert "file_progress" in text
 
 
 def _keys(text: str, lang: str) -> set[str]:

@@ -33,6 +33,7 @@ log = logging.getLogger("ptopchat.p2p")
 PING_INTERVAL = 20
 READ_TIMEOUT = 60
 HANDSHAKE_TIMEOUT = 15
+_EMPTY = object()
 
 
 async def _read_json(reader: asyncio.StreamReader) -> dict[str, Any]:
@@ -126,32 +127,41 @@ class PeerLink:
         self.peer_site = peer_site
         self.peer_address = peer_address
         self.closed = False
-        self.outbox: asyncio.Queue[Any] = asyncio.Queue()
+        self.urgent: asyncio.Queue[Any] = asyncio.Queue()
+        self.files: asyncio.Queue[Any] = asyncio.Queue()
+        self._notify: asyncio.Future[None] | None = None
+        self._stopping = False
         self._decoder = FrameDecoder(key)
 
-    async def enqueue(self, job: Any) -> None:
-        if self.closed:
+    def _poke(self) -> None:
+        waiter = self._notify
+        if waiter is not None and not waiter.done():
+            waiter.set_result(None)
+
+    async def _put(self, queue: asyncio.Queue[Any], job: Any) -> None:
+        if self.closed and job is not None:
             return
-        await self.outbox.put(job)
+        await queue.put(job)
+        self._poke()
 
     async def enqueue_frame(self, header: dict[str, Any], payload: bytes = b"") -> None:
-        await self.enqueue(("frame", header, payload))
+        await self._put(self.urgent, ("frame", header, payload))
 
     async def enqueue_file(self, message: dict[str, Any], offset: int) -> None:
-        await self.enqueue(("file", message, offset))
+        await self._put(self.files, ("file", message, offset))
 
     async def enqueue_missing(self, ids: list[str]) -> None:
-        await self.enqueue(("missing", ids))
+        await self._put(self.files, ("missing", ids))
 
     async def enqueue_resume(self, header: dict[str, Any]) -> None:
-        await self.enqueue(("resume", header))
+        await self._put(self.files, ("resume", header))
 
     async def run(self) -> None:
         writer_task = asyncio.create_task(self._writer_loop(), name="p2p-writer")
         ping_task = asyncio.create_task(self._ping_loop(), name="p2p-ping")
-        await self.enqueue(("sync",))
-        await self.enqueue(("presence",))
-        await self.enqueue(("catchup",))
+        await self._put(self.urgent, ("sync",))
+        await self._put(self.urgent, ("presence",))
+        await self._put(self.urgent, ("catchup",))
         try:
             await self._read_loop()
         finally:
@@ -160,7 +170,7 @@ class PeerLink:
             with contextlib.suppress(asyncio.CancelledError):
                 await ping_task
             self.writer.close()
-            await self.outbox.put(None)
+            await self._put(self.urgent, None)
             with contextlib.suppress(Exception):
                 await writer_task
 
@@ -190,40 +200,82 @@ class PeerLink:
                 log.warning("peer %s protocol error: %s", self.peer_site, exc)
                 return
 
+    def _poll(self) -> Any:
+        if not self.urgent.empty():
+            return self.urgent.get_nowait()
+        if not self.files.empty():
+            return self.files.get_nowait()
+        return _EMPTY
+
+    async def _next_job(self) -> Any:
+        while True:
+            job = self._poll()
+            if job is not _EMPTY:
+                return job
+            self._notify = asyncio.get_running_loop().create_future()
+            job = self._poll()
+            if job is not _EMPTY:
+                self._notify = None
+                return job
+            await self._notify
+            self._notify = None
+
     async def _writer_loop(self) -> None:
         try:
-            while True:
-                job = await self.outbox.get()
+            while not self._stopping:
+                job = await self._next_job()
                 if job is None:
                     return
-                kind = job[0]
-                if kind == "frame":
-                    _, header, payload = job
-                    await self._write(header, payload)
-                elif kind == "file":
-                    _, message, offset = job
-                    await self._send_file(message, int(offset))
-                elif kind == "missing":
-                    await self._send_missing(set(job[1]))
-                elif kind == "resume":
-                    await self._send_resume(job[1])
-                elif kind == "sync":
-                    ids = self.hub.store.ids_recent(HISTORY_WINDOW)
-                    await self._write({"type": "sync", "ids": ids})
-                elif kind == "presence":
-                    await self._write({"type": "presence", "online": len(self.hub.clients)})
-                elif kind == "catchup":
-                    for message in self.hub.store.incomplete_files(HISTORY_WINDOW):
-                        if message.get("dest") != self.hub.config.address:
-                            continue
-                        offset = self.hub.store.file_size(message["id"])
-                        await self._write(
-                            {"type": "file_resume", "id": message["id"], "offset": offset}
-                        )
+                await self._dispatch(job)
+                if self._stopping:
+                    return
         except (ConnectionError, asyncio.IncompleteReadError, ProtocolError) as exc:
             log.warning("peer write failed: %s", exc)
             self.closed = True
             self.writer.close()
+
+    async def _dispatch(self, job: Any) -> None:
+        kind = job[0]
+        if kind == "frame":
+            _, header, payload = job
+            await self._write(header, payload)
+        elif kind == "file":
+            _, message, offset = job
+            await self._send_file(message, int(offset))
+        elif kind == "missing":
+            await self._send_missing(set(job[1]))
+        elif kind == "resume":
+            await self._send_resume(job[1])
+        elif kind in {"sync", "presence", "catchup"}:
+            await self._run_control(kind)
+
+    async def _flush_urgent(self) -> None:
+        while not self.urgent.empty():
+            job = self.urgent.get_nowait()
+            if job is None:
+                self._stopping = True
+                return
+            kind = job[0]
+            if kind == "frame":
+                _, header, payload = job
+                await self._write(header, payload)
+            elif kind in {"sync", "presence", "catchup"}:
+                await self._run_control(kind)
+            elif kind in {"file", "missing", "resume"}:
+                await self._put(self.files, job)
+
+    async def _run_control(self, kind: str) -> None:
+        if kind == "sync":
+            ids = self.hub.store.ids_recent(HISTORY_WINDOW)
+            await self._write({"type": "sync", "ids": ids})
+        elif kind == "presence":
+            await self._write({"type": "presence", "online": len(self.hub.clients)})
+        elif kind == "catchup":
+            for message in self.hub.store.incomplete_files(HISTORY_WINDOW):
+                if message.get("dest") != self.hub.config.address:
+                    continue
+                offset = self.hub.store.file_size(message["id"])
+                await self._write({"type": "file_resume", "id": message["id"], "offset": offset})
 
     async def _write(self, header: dict[str, Any], payload: bytes = b"") -> None:
         self.writer.write(seal(self.key, header, payload))
@@ -246,30 +298,42 @@ class PeerLink:
                 }
             )
             offset = 0
-        while offset < size:
+            await self._flush_urgent()
+        while offset < size and not self._stopping:
             chunk = self.hub.store.read_chunk(message["id"], offset, CHUNK_SIZE)
             if not chunk:
                 break
             await self._write({"type": "file_chunk", "id": message["id"], "offset": offset}, chunk)
             offset += len(chunk)
+            await self._flush_urgent()
 
     async def _send_missing(self, known: set[str]) -> None:
-        for message in self.hub.store.recent(HISTORY_WINDOW):
-            if message["id"] in known or message.get("dest") != self.peer_address:
+        pending = [
+            message
+            for message in self.hub.store.recent(HISTORY_WINDOW)
+            if message["id"] not in known and message.get("dest") == self.peer_address
+        ]
+        for message in pending:
+            if message["kind"] != "chat":
                 continue
-            if message["kind"] == "chat":
-                await self._write(
-                    {
-                        "type": "chat",
-                        "id": message["id"],
-                        "ts": message["ts"],
-                        "site": message["site"],
-                        "nick": message["nick"],
-                        "to": message["dest"],
-                        "text": message["text"],
-                    }
-                )
-            elif message["kind"] == "file" and message["file_complete"]:
+            await self._flush_urgent()
+            if self._stopping:
+                return
+            await self._write(
+                {
+                    "type": "chat",
+                    "id": message["id"],
+                    "ts": message["ts"],
+                    "site": message["site"],
+                    "nick": message["nick"],
+                    "to": message["dest"],
+                    "text": message["text"],
+                }
+            )
+        for message in pending:
+            if self._stopping:
+                return
+            if message["kind"] == "file" and message["file_complete"]:
                 await self._send_file(message, 0)
 
     async def _send_resume(self, header: dict[str, Any]) -> None:
