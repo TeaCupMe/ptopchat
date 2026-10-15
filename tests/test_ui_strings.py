@@ -12,6 +12,8 @@ def test_locales_have_the_same_keys():
     assert {"progress", "waitingLink", "sending"} <= _keys(text, "en")
     assert "pendingRef" in text
     assert "file_progress" in text
+    assert "next >= previous" in text
+    assert "message.rejected" in text
     assert "randomUUID(" not in text
     assert "getRandomValues" in text
 

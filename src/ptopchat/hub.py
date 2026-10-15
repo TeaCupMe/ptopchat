@@ -74,6 +74,11 @@ class Hub:
         if clients:
             await asyncio.gather(*(ship(client) for client in clients))
 
+    async def note_file_delivered(self, message_id: str, size: int) -> None:
+        await self.broadcast(
+            {"type": "file_progress", "id": str(message_id), "received": int(size), "size": int(size)}
+        )
+
     async def note_clients_changed(self) -> None:
         await self.broadcast({"type": "presence", "local_online": len(self.clients)})
         peer = self.peer

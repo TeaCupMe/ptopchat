@@ -175,10 +175,9 @@ function formatSize(size) {
 function transferLabel(message) {
   const size = Number(message.size || 0);
   const received = Number(message.received || 0);
+  if (!(size > 0 && received < size)) return "";
   const remote = Boolean(message.dest && state.localAddress && message.dest !== state.localAddress);
-  const incoming = !message.file_complete;
-  const onWire = message.file_complete && remote && received < size;
-  if (!incoming && !onWire) return "";
+  if (message.file_complete && !remote) return "";
   if (!state.peerOnline) return t("waitingLink");
   return fill(t("progress"), { got: formatSize(received), total: formatSize(size) });
 }
@@ -249,7 +248,9 @@ function renderMessages() {
         pending.textContent = label;
         row.append(pending);
       }
-      if (message.file_complete) {
+      const size = Number(message.size || 0);
+      const received = Number(message.received || 0);
+      if (message.file_complete || (size > 0 && received >= size)) {
         const link = document.createElement("a");
         link.href = `/api/files/${encodeURIComponent(message.id)}`;
         link.textContent = t("download");
@@ -322,7 +323,14 @@ function connect() {
     } else if (payload.type === "file_progress") {
       const message = state.messages.get(String(payload.id || "").toLowerCase()) || state.messages.get(payload.id);
       if (message) {
-        message.received = Number(payload.received) || 0;
+        const next = Number(payload.received) || 0;
+        const previous = Number(message.received || 0);
+        if (next === 0 && Number(message.size) > 0) {
+          message.received = 0;
+          message.rejected = true;
+        } else if (!message.rejected && next >= previous) {
+          message.received = next;
+        }
         renderMessages();
       }
     } else if (payload.type === "destinations") {

@@ -299,13 +299,20 @@ class PeerLink:
             )
             offset = 0
             await self._flush_urgent()
-        while offset < size and not self._stopping:
-            chunk = self.hub.store.read_chunk(message["id"], offset, CHUNK_SIZE)
-            if not chunk:
-                break
-            await self._write({"type": "file_chunk", "id": message["id"], "offset": offset}, chunk)
-            offset += len(chunk)
-            await self._flush_urgent()
+        try:
+            while offset < size and not self._stopping:
+                chunk = self.hub.store.read_chunk(message["id"], offset, CHUNK_SIZE)
+                if not chunk:
+                    break
+                await self._write({"type": "file_chunk", "id": message["id"], "offset": offset}, chunk)
+                offset += len(chunk)
+                await self._flush_urgent()
+        finally:
+            if offset >= size:
+                notify = getattr(self.hub, "note_file_delivered", None)
+                if notify is not None:
+                    with contextlib.suppress(Exception):
+                        await notify(message["id"], size)
 
     async def _send_missing(self, known: set[str]) -> None:
         pending = [

@@ -4,6 +4,8 @@ import asyncio
 import hashlib
 import uuid
 
+import pytest
+
 from ptopchat.config import Config
 from ptopchat.hub import Hub
 from ptopchat.p2p import PeerLink
@@ -250,3 +252,83 @@ def test_outgoing_file_starts_at_zero_until_the_peer_acks(tmp_path):
     assert message["received"] == 0
     assert hub.peer.files[0][1] == 0
     store.close()
+
+
+def test_finished_send_reports_the_full_size():
+    blob = b"x" * (CHUNK_SIZE + 3)
+    notified: list[tuple] = []
+
+    class Hub:
+        def __init__(self) -> None:
+            self.store = _Store(blob)
+
+        async def note_file_delivered(self, message_id: str, size: int) -> None:
+            notified.append((message_id, size))
+
+    link = PeerLink(Hub(), None, None, b"k" * 32, "b", "10.0.0.2:9")
+
+    async def spy(header: dict, payload: bytes = b"") -> None:
+        return None
+
+    link._write = spy
+    asyncio.run(
+        link._send_file(
+            {
+                "id": "f",
+                "ts": 1,
+                "site": "a",
+                "nick": "Ann",
+                "dest": "10.0.0.2:9",
+                "filename": "blob.bin",
+                "size": len(blob),
+                "sha256": "abc",
+            },
+            0,
+        )
+    )
+    assert notified == [("f", len(blob))]
+
+
+def test_delivery_notice_survives_a_drop_after_the_last_byte():
+    blob = b"x" * 20
+    notified: list[tuple] = []
+
+    class Hub:
+        def __init__(self) -> None:
+            self.store = _Store(blob)
+
+        async def note_file_delivered(self, message_id: str, size: int) -> None:
+            notified.append((message_id, size))
+
+    link = PeerLink(Hub(), None, None, b"k" * 32, "b", "10.0.0.2:9")
+
+    chunks = 0
+
+    async def spy(header: dict, payload: bytes = b"") -> None:
+        nonlocal chunks
+        if header["type"] == "file_chunk":
+            chunks += 1
+
+    async def drop_after_the_chunk() -> None:
+        if chunks:
+            raise ConnectionError("peer dropped")
+
+    link._write = spy
+    link._flush_urgent = drop_after_the_chunk
+    with pytest.raises(ConnectionError):
+        asyncio.run(
+            link._send_file(
+                {
+                    "id": "f",
+                    "ts": 1,
+                    "site": "a",
+                    "nick": "Ann",
+                    "dest": "10.0.0.2:9",
+                    "filename": "blob.bin",
+                    "size": len(blob),
+                    "sha256": "abc",
+                },
+                0,
+            )
+        )
+    assert notified == [("f", len(blob))]
