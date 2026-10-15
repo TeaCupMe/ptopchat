@@ -117,7 +117,7 @@ class HttpServer:
             limit = max(1, min(HISTORY_LIMIT, int(raw_limit)))
         except ValueError:
             limit = HISTORY_LIMIT
-        body = json.dumps({"messages": self.hub.store.recent(limit)}, ensure_ascii=False).encode("utf-8")
+        body = json.dumps({"messages": self.hub.history(limit)}, ensure_ascii=False).encode("utf-8")
         return 200, "OK", body, "application/json; charset=utf-8", []
 
     async def _upload(self, request: "_Request") -> tuple[int, str, bytes, str, list[tuple[str, str]]]:
@@ -193,7 +193,7 @@ class HttpServer:
                         "peer_online": self.hub.peer_online,
                         "peer_users": self.hub.peer_users,
                         "local_online": len(self.hub.clients),
-                        "history": self.hub.store.recent(HISTORY_LIMIT),
+                        "history": self.hub.history(HISTORY_LIMIT),
                         "max_file_bytes": self.config.max_file_bytes,
                     },
                     ensure_ascii=False,
@@ -245,7 +245,9 @@ class HttpServer:
         if not isinstance(obj, dict) or obj.get("type") != "chat":
             return
         try:
-            await self.hub.post_chat(str(obj.get("text", "")), str(obj.get("to", "")))
+            await self.hub.post_chat(
+                str(obj.get("text", "")), str(obj.get("to", "")), obj.get("ref"), origin=client
+            )
         except HubError as exc:
             await client.send(json.dumps({"type": "error", "error": str(exc)}, ensure_ascii=False))
 

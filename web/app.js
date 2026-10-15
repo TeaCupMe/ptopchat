@@ -12,7 +12,9 @@ const I18N = {
     empty: "Сообщений пока нет",
     connecting: "Подключение…",
     fileTooLarge: "Файл больше допустимого размера",
-    transferring: "Файл ещё передаётся",
+    progress: "передаётся {got} из {total}",
+    waitingLink: "ожидание канала",
+    sending: "отправляется",
     sendFailed: "Не удалось отправить",
     placeholderMessage: "Текст сообщения",
     localOnline: "На этом сайте: {n}",
@@ -32,7 +34,9 @@ const I18N = {
     empty: "No messages yet",
     connecting: "Connecting…",
     fileTooLarge: "File exceeds the size limit",
-    transferring: "File is still transferring",
+    progress: "transferring {got} of {total}",
+    waitingLink: "waiting for the link",
+    sending: "sending",
     sendFailed: "Could not send",
     placeholderMessage: "Message text",
     localOnline: "On this site: {n}",
@@ -54,6 +58,8 @@ const state = {
   maxFileBytes: 100 * 1024 * 1024,
   wsOpen: false,
   socket: null,
+  pendingRef: "",
+  pendingText: "",
 };
 
 const transcript = document.getElementById("transcript");
@@ -95,6 +101,7 @@ function applyLang() {
   document.getElementById("lang-en").classList.toggle("active", state.lang === "en");
   document.getElementById("lang-ru").setAttribute("aria-pressed", state.lang === "ru" ? "true" : "false");
   document.getElementById("lang-en").setAttribute("aria-pressed", state.lang === "en" ? "true" : "false");
+  sendButton.textContent = state.pendingRef ? t("sending") : t("send");
   renderChrome();
   renderDestinations();
   renderMessages();
@@ -152,9 +159,48 @@ function formatTime(ts) {
 }
 
 function formatSize(size) {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  const units = state.lang === "ru" ? ["Б", "КБ", "МБ", "ГБ"] : ["B", "KB", "MB", "GB"];
+  let value = Number(size) || 0;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  const digits = unit === 0 || value >= 10 ? 0 : 1;
+  let text = value.toFixed(digits);
+  if (state.lang === "ru") text = text.replace(".", ",");
+  return `${text} ${units[unit]}`;
+}
+
+function transferLabel(message) {
+  const size = Number(message.size || 0);
+  const received = Number(message.received || 0);
+  if (!(size > 0 && received < size)) return "";
+  const remote = Boolean(message.dest && state.localAddress && message.dest !== state.localAddress);
+  if (message.file_complete && !remote) return "";
+  if (!state.peerOnline) return t("waitingLink");
+  return fill(t("progress"), { got: formatSize(received), total: formatSize(size) });
+}
+
+function releaseComposer(clearText) {
+  const unchanged = textInput.value === state.pendingText;
+  state.pendingRef = "";
+  state.pendingText = "";
+  if (clearText && unchanged) textInput.value = "";
+  const open = Boolean(state.socket && state.socket.readyState === WebSocket.OPEN);
+  state.wsOpen = open;
+  sendButton.disabled = !open;
+  sendButton.textContent = t("send");
+}
+
+function acceptOutgoing(payload) {
+  if (!state.pendingRef || !payload || !payload.message) return false;
+  if (payload.ref && payload.ref === state.pendingRef) return true;
+  const message = payload.message;
+  return message.kind !== "file"
+    && message.site === state.siteName
+    && message.text === state.pendingText
+    && Math.abs(Number(message.ts) * 1000 - Date.now()) < 15000;
 }
 
 function renderMessages() {
@@ -195,15 +241,20 @@ function renderMessages() {
       const name = document.createElement("span");
       name.textContent = `${message.filename} (${formatSize(message.size || 0)})`;
       row.append(name);
-      if (message.file_complete) {
+      const label = transferLabel(message);
+      if (label) {
+        const pending = document.createElement("span");
+        pending.className = "transfer";
+        pending.textContent = label;
+        row.append(pending);
+      }
+      const size = Number(message.size || 0);
+      const received = Number(message.received || 0);
+      if (message.file_complete || (size > 0 && received >= size)) {
         const link = document.createElement("a");
         link.href = `/api/files/${encodeURIComponent(message.id)}`;
         link.textContent = t("download");
         row.append(link);
-      } else {
-        const pending = document.createElement("span");
-        pending.textContent = t("transferring");
-        row.append(pending);
       }
       card.append(row);
     } else {
@@ -227,13 +278,25 @@ function showError(text) {
   formError.textContent = text || "";
 }
 
+function newRef() {
+  // Workstations open this page over plain HTTP on the LAN. The UUID helper
+  // on crypto is limited to HTTPS, so the id is built from getRandomValues.
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  let hex = "";
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const socket = new WebSocket(`${proto}://${location.host}/ws`);
   state.socket = socket;
   socket.addEventListener("open", () => {
     state.wsOpen = true;
-    sendButton.disabled = false;
+    sendButton.disabled = Boolean(state.pendingRef);
     renderChrome();
   });
   socket.addEventListener("message", (event) => {
@@ -255,7 +318,21 @@ function connect() {
       renderChrome();
       renderMessages();
     } else if (payload.type === "message" && payload.message) {
+      if (acceptOutgoing(payload)) releaseComposer(true);
       upsert(payload.message);
+    } else if (payload.type === "file_progress") {
+      const message = state.messages.get(String(payload.id || "").toLowerCase()) || state.messages.get(payload.id);
+      if (message) {
+        const next = Number(payload.received) || 0;
+        const previous = Number(message.received || 0);
+        if (next === 0 && Number(message.size) > 0) {
+          message.received = 0;
+          message.rejected = true;
+        } else if (!message.rejected && next >= previous) {
+          message.received = next;
+        }
+        renderMessages();
+      }
     } else if (payload.type === "destinations") {
       applyDestinationList(payload.address, payload.addresses);
       renderChrome();
@@ -263,10 +340,12 @@ function connect() {
       state.peerOnline = Boolean(payload.online);
       state.peerUsers = payload.users || 0;
       renderChrome();
+      renderMessages();
     } else if (payload.type === "presence") {
       state.localOnline = payload.local_online || 0;
       renderChrome();
     } else if (payload.type === "error") {
+      if (state.pendingRef) releaseComposer(false);
       showError(payload.error || t("sendFailed"));
     }
   });
@@ -274,8 +353,14 @@ function connect() {
     if (state.socket !== socket) return;
     state.wsOpen = false;
     state.peerOnline = false;
-    sendButton.disabled = true;
+    if (state.pendingRef) {
+      releaseComposer(false);
+      showError(t("sendFailed"));
+    } else {
+      sendButton.disabled = true;
+    }
     renderChrome();
+    renderMessages();
     setTimeout(connect, 1000);
   });
 }
@@ -317,12 +402,23 @@ document.getElementById("composer").addEventListener("submit", async (event) => 
   }
   try {
     if (text.trim()) {
+      if (state.pendingRef) return;
       if (!state.socket || state.socket.readyState !== WebSocket.OPEN) {
         showError(t("sendFailed"));
         return;
       }
-      state.socket.send(JSON.stringify({ type: "chat", text, to: dest }));
-      textInput.value = "";
+      const ref = newRef();
+      state.pendingRef = ref;
+      state.pendingText = text;
+      sendButton.disabled = true;
+      sendButton.textContent = t("sending");
+      try {
+        state.socket.send(JSON.stringify({ type: "chat", text, to: dest, ref }));
+      } catch (_sendErr) {
+        releaseComposer(false);
+        showError(t("sendFailed"));
+        return;
+      }
     }
     if (file) {
       const form = new FormData();
